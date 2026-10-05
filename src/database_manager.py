@@ -20,7 +20,10 @@ class DatabaseManager:
 
     def connect(self):
         """Open and return a PostgreSQL connection."""
-        return psycopg.connect(self.database_url)
+        return psycopg.connect(
+            self.database_url,
+            connect_timeout=15
+        )
 
     def test_connection(self):
         """Test the database connection."""
@@ -32,7 +35,7 @@ class DatabaseManager:
         return result[0] == 1
 
     def create_tables(self):
-        """Create the project tables if they do not already exist."""
+        """Create all required project tables."""
 
         training_table = """
         CREATE TABLE IF NOT EXISTS training_data (
@@ -86,45 +89,55 @@ class DatabaseManager:
 
             connection.commit()
 
-    def upload_training_data(self, dataframe):
-        """Upload a training DataFrame into PostgreSQL."""
+    def clear_training_data(self):
+        """Remove previous training records."""
+        with self.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "TRUNCATE TABLE training_data RESTART IDENTITY;"
+                )
 
-        insert_query = """
-        INSERT INTO training_data (
+            connection.commit()
+
+    def upload_training_data(self, dataframe):
+        """Upload training data efficiently using PostgreSQL COPY."""
+
+        copy_query = """
+        COPY training_data (
             trait,
             axis_1, axis_2, axis_3, axis_4,
             axis_5, axis_6, axis_7, axis_8,
             timestamp
         )
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+        FROM STDIN
         """
 
-        records = []
-
-        for _, row in dataframe.iterrows():
-            records.append(
-                (
-                    row["Trait"],
-                    row["Axis #1"],
-                    row["Axis #2"],
-                    row["Axis #3"],
-                    row["Axis #4"],
-                    row["Axis #5"],
-                    row["Axis #6"],
-                    row["Axis #7"],
-                    row["Axis #8"],
-                    row["Time"],
-                )
-            )
+        columns = [
+            "Trait",
+            "Axis #1",
+            "Axis #2",
+            "Axis #3",
+            "Axis #4",
+            "Axis #5",
+            "Axis #6",
+            "Axis #7",
+            "Axis #8",
+            "Time",
+        ]
 
         with self.connect() as connection:
             with connection.cursor() as cursor:
-                cursor.executemany(insert_query, records)
+                with cursor.copy(copy_query) as copy:
+                    for row in dataframe[columns].itertuples(
+                        index=False,
+                        name=None
+                    ):
+                        copy.write_row(row)
 
             connection.commit()
 
     def get_training_data(self):
-        """Retrieve the training dataset from PostgreSQL."""
+        """Retrieve training data from PostgreSQL."""
 
         query = """
         SELECT
@@ -137,17 +150,137 @@ class DatabaseManager:
         """
 
         with self.connect() as connection:
-            dataframe = pd.read_sql(query, connection)
+            with connection.cursor() as cursor:
+                cursor.execute(query)
 
-        return dataframe
+                rows = cursor.fetchall()
 
-    def clear_training_data(self):
-        """Remove existing training records before a fresh upload."""
+                columns = [
+                    description.name
+                    for description in cursor.description
+                ]
+
+        return pd.DataFrame(rows, columns=columns)
+
+    def clear_stream_data(self):
+        """Remove previous simulated streaming records."""
 
         with self.connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(
-                    "TRUNCATE TABLE training_data RESTART IDENTITY;"
+                    "TRUNCATE TABLE stream_data RESTART IDENTITY;"
                 )
+
+            connection.commit()
+
+    def upload_stream_data(self, dataframe):
+        """Upload simulated stream efficiently using PostgreSQL COPY."""
+
+        copy_query = """
+        COPY stream_data (
+            trait,
+            axis_1, axis_2, axis_3, axis_4,
+            axis_5, axis_6, axis_7, axis_8,
+            timestamp
+        )
+        FROM STDIN
+        """
+
+        columns = [
+            "trait",
+            "axis_1",
+            "axis_2",
+            "axis_3",
+            "axis_4",
+            "axis_5",
+            "axis_6",
+            "axis_7",
+            "axis_8",
+            "timestamp",
+        ]
+
+        with self.connect() as connection:
+            with connection.cursor() as cursor:
+                with cursor.copy(copy_query) as copy:
+                    for row in dataframe[columns].itertuples(
+                        index=False,
+                        name=None
+                    ):
+                        copy.write_row(row)
+
+            connection.commit()
+
+    def get_stream_data(self):
+        """Retrieve simulated streaming data from PostgreSQL."""
+
+        query = """
+        SELECT
+            trait,
+            axis_1, axis_2, axis_3, axis_4,
+            axis_5, axis_6, axis_7, axis_8,
+            timestamp
+        FROM stream_data
+        ORDER BY timestamp;
+        """
+
+        with self.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(query)
+
+                rows = cursor.fetchall()
+
+                columns = [
+                    description.name
+                    for description in cursor.description
+                ]
+
+        return pd.DataFrame(rows, columns=columns)
+
+    def clear_anomaly_events(self):
+        """Remove previous anomaly-event records."""
+
+        with self.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "TRUNCATE TABLE anomaly_events RESTART IDENTITY;"
+                )
+
+            connection.commit()
+
+    def upload_anomaly_events(self, events_df):
+        """Store detected Alert and Error events in PostgreSQL."""
+
+        if events_df.empty:
+            return
+
+        copy_query = """
+        COPY anomaly_events (
+            axis,
+            event_type,
+            start_time,
+            end_time,
+            duration_seconds,
+            max_deviation
+        )
+        FROM STDIN
+        """
+
+        columns = [
+            "axis",
+            "event_type",
+            "start_time",
+            "end_time",
+            "duration_seconds",
+            "max_deviation",
+        ]
+
+        with self.connect() as connection:
+            with connection.cursor() as cursor:
+                with cursor.copy(copy_query) as copy:
+                    for row in events_df[columns].itertuples(
+                        index=False,
+                        name=None
+                    ):
+                        copy.write_row(row)
 
             connection.commit()
